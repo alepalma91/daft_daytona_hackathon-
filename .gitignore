@@ -1,0 +1,17 @@
+venv/
+.env
+.env.config
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.DS_Store
+.env.local
+.env.development
+.env.production
+backend/.env
+backend/__pycache__/
+backend/*.pyc

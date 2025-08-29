@@ -1,5 +1,17 @@
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-pydantic==2.5.0
-python-multipart==0.0.6
-websockets==12.0
+fastapi
+uvicorn[standard]
+pydantic
+python-multipart
+websockets
+# Daft and ML dependencies for style analysis
+daft
+transformers
+torch
+accelerate
+datasets
+pillow
+numpy
+openai
+python-dotenv
+aiofiles
+httpx

@@ -4,6 +4,7 @@ import type { ChatMessage } from './types';
 class ImageCanvasApp {
   private canvas!: ImageCanvas;
   private chatMessages: ChatMessage[] = [];
+  private backendUrl = 'http://localhost:8001';
 
   constructor() {
     console.log('Creating ImageCanvasApp...');
@@ -123,11 +124,16 @@ class ImageCanvasApp {
         addUrlBtn.disabled = true;
         addUrlBtn.textContent = 'Loading...';
         
+        // Add to canvas
         await this.canvas.addImage(url);
         urlInput.value = '';
         
         this.addChatMessage('System', `Image added from URL: ${url}`);
         this.updateGroupButtonStates();
+        
+        // Send to backend for style analysis
+        await this.sendImageToBackend(url, `url-image-${Date.now()}.jpg`);
+        
       } catch (error) {
         this.addChatMessage('System', `Failed to load image: ${error instanceof Error ? error.message : 'Unknown error'}`);
       } finally {
@@ -156,6 +162,10 @@ class ImageCanvasApp {
           await this.canvas.addImage(url);
           this.addChatMessage('System', `Image added: ${file.name}`);
           this.updateGroupButtonStates();
+          
+          // Send to backend for style analysis
+          await this.sendImageToBackend(url, file.name);
+          
         } catch (error) {
           this.addChatMessage('System', `Failed to load ${file.name}: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
@@ -259,6 +269,10 @@ class ImageCanvasApp {
             const url = URL.createObjectURL(file);
             await this.canvas.addImage(url);
             this.addChatMessage('System', `Image dropped: ${file.name}`);
+            
+            // Send to backend for style analysis
+            await this.sendImageToBackend(url, file.name);
+            
           } catch (error) {
             this.addChatMessage('System', `Failed to load dropped image: ${error instanceof Error ? error.message : 'Unknown error'}`);
           }
@@ -267,11 +281,18 @@ class ImageCanvasApp {
 
       // Handle dropped URLs
       if (urls && this.isValidUrl(urls)) {
-        this.canvas.addImage(urls).then(() => {
-          this.addChatMessage('System', `Image added from dropped URL: ${urls}`);
-        }).catch((error) => {
-          this.addChatMessage('System', `Failed to load dropped image: ${error instanceof Error ? error.message : 'Unknown error'}`);
-        });
+        (async () => {
+          try {
+            await this.canvas.addImage(urls);
+            this.addChatMessage('System', `Image added from dropped URL: ${urls}`);
+            
+            // Send to backend for style analysis
+            await this.sendImageToBackend(urls, `dropped-url-${Date.now()}.jpg`);
+            
+          } catch (error) {
+            this.addChatMessage('System', `Failed to load dropped image: ${error instanceof Error ? error.message : 'Unknown error'}`);
+          }
+        })();
       }
     });
   }
@@ -328,12 +349,98 @@ class ImageCanvasApp {
   private async addTestImage(): Promise<void> {
     // Add a simple test image to verify the canvas is working
     try {
-      await this.canvas.addImage('https://picsum.photos/300/200?random=1');
+      const testUrl = 'https://picsum.photos/300/200?random=1';
+      await this.canvas.addImage(testUrl);
       this.addChatMessage('System', 'Added test image from Picsum Photos');
       this.updateGroupButtonStates();
+      
+      // Send to backend for style analysis
+      await this.sendImageToBackend(testUrl, 'test-image.jpg');
+      
     } catch (error) {
       console.log('Test image failed to load, creating canvas test pattern instead');
       // If external image fails, we'll just rely on the grid background
+    }
+  }
+
+  private async sendImageToBackend(imageSource: string, filename?: string): Promise<string | null> {
+    try {
+      // Convert image source to blob
+      let imageBlob: Blob;
+      
+      if (imageSource.startsWith('blob:') || imageSource.startsWith('data:')) {
+        // Handle blob URLs or data URLs
+        const response = await fetch(imageSource);
+        imageBlob = await response.blob();
+      } else {
+        // Handle regular URLs - fetch and convert to blob
+        const response = await fetch(imageSource, { mode: 'cors' });
+        imageBlob = await response.blob();
+      }
+
+      // Create FormData for backend upload
+      const formData = new FormData();
+      formData.append('file', imageBlob, filename || 'image.jpg');
+
+      // Send to backend using the new API endpoint
+      const uploadResponse = await fetch(`${this.backendUrl}/api/analyze-image`, {
+        method: 'POST',
+        body: formData
+      });
+
+      if (uploadResponse.ok) {
+        const result = await uploadResponse.json();
+        this.addChatMessage('🎨 AI Backend', `Image uploaded for analysis: ${result.filename}`);
+        
+        // Trigger style analysis
+        setTimeout(() => this.requestStyleAnalysis([result.image_id]), 2000);
+        
+        return result.image_id;
+      } else {
+        const error = await uploadResponse.text();
+        this.addChatMessage('❌ Backend', `Failed to upload image: ${error}`);
+        return null;
+      }
+    } catch (error) {
+      console.warn('Backend upload failed:', error);
+      this.addChatMessage('⚠️ Backend', `Backend connection failed - working offline`);
+      return null;
+    }
+  }
+
+  private async requestStyleAnalysis(imageIds: string[]): Promise<void> {
+    try {
+      const response = await fetch(`${this.backendUrl}/api/analyze-styles`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ image_ids: imageIds })
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        this.addChatMessage('🤖 AI Stylist', `Analyzed ${result.analyzed_count} images successfully!`);
+        
+        // Display style analysis results
+        result.results.forEach((analysis: any) => {
+          if (analysis.style_description && analysis.style_description !== '') {
+            this.addChatMessage('✨ Style Analysis', 
+              `${analysis.filename}: ${analysis.style_description.substring(0, 300)}${analysis.style_description.length > 300 ? '...' : ''}`);
+            
+            // Show dominant colors if available
+            if (analysis.dominant_colors && analysis.dominant_colors.length > 0) {
+              this.addChatMessage('🎨 Color Palette', 
+                `Dominant colors: ${analysis.dominant_colors.slice(0, 5).join(', ')}`);
+            }
+          }
+        });
+      } else {
+        this.addChatMessage('❌ Backend', 'Style analysis failed');
+      }
+    } catch (error) {
+      console.warn('Style analysis failed:', error);
+      this.addChatMessage('⚠️ Backend', 'Style analysis request failed');
     }
   }
 

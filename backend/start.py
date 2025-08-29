@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Startup script for Image Canvas Workspace API
+Startup script for Image Canvas Workspace API with Style Analysis
 """
 
 import uvicorn
@@ -10,16 +10,24 @@ import sys
 def main():
     """Start the FastAPI server"""
     try:
-        print("🚀 Starting Image Canvas Workspace API...")
-        print("📍 Server will be available at: http://localhost:8000")
-        print("📖 API docs available at: http://localhost:8000/docs")
-        print("🔌 WebSocket endpoint: ws://localhost:8000/ws/{canvas_id}")
+        print("🚀 Starting Image Canvas Workspace API with Style Analysis...")
+        print("📍 Server will be available at: http://localhost:8001")
+        print("📖 API docs available at: http://localhost:8001/docs")
+        print("🔌 WebSocket endpoint: ws://localhost:8001/ws/{canvas_id}")
+        print("🎨 Style analysis with Daft + LLM integration")
+        
+        # Check if HF_TOKEN is available
+        if os.getenv("HF_TOKEN"):
+            print("✅ HF_TOKEN found in environment")
+        else:
+            print("⚠️ HF_TOKEN not found - some models may not be accessible")
+        
         print("\n⚡ Starting server...")
         
         uvicorn.run(
             "main:app",
             host="0.0.0.0",
-            port=8000,
+            port=8001,  # Use different port to avoid conflicts
             reload=True,  # Auto-reload on file changes
             log_level="info"
         )
