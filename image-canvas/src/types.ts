@@ -14,7 +14,8 @@ export interface Rectangle {
 
 export interface ImageNode {
   id: string;
-  img: HTMLImageElement;
+  img?: HTMLImageElement; // Optional for API, required for canvas
+  src?: string; // For API storage
   x: number;
   y: number;
   w: number;
@@ -46,13 +47,23 @@ export interface SelectionState {
 export interface ChatMessage {
   id: string;
   text: string;
-  timestamp: number;
+  sender?: string;
+  timestamp: string | Date;
+  canvasId?: string;
 }
 
 export interface ImageGroup {
   id: string;
   imageIds: string[];
   name?: string;
+}
+
+export interface CanvasState {
+  id: string;
+  images: ImageNode[];
+  groups: ImageGroup[];
+  viewport: Viewport;
+  lastModified: string | Date;
 }
 
 // Event types
