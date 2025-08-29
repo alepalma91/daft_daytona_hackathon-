@@ -1,4 +1,5 @@
 import { ImageCanvas } from './canvas';
+import { canvasAPI } from './api';
 import type { ChatMessage } from './types';
 
 class ImageCanvasApp {
@@ -31,7 +32,8 @@ class ImageCanvasApp {
     });
     
     this.setupEventListeners();
-    this.addChatMessage('System', 'Image Canvas Workspace ready! Add images using the toolbar above.');
+    this.setupRealTimeFeatures();
+    this.addChatMessage('System', '🎨 Image Canvas Workspace ready! Add images or try "generate a sunset" in chat.');
     console.log('Canvas initialized successfully');
 
     // Add a test image to verify everything is working
@@ -198,12 +200,20 @@ class ImageCanvasApp {
     const chatInput = document.getElementById('chat-input') as HTMLInputElement;
     const sendBtn = document.getElementById('send-btn') as HTMLButtonElement;
 
-    const sendMessage = () => {
+    const sendMessage = async () => {
       const text = chatInput.value.trim();
       if (!text) return;
 
-      this.addChatMessage('You', text);
       chatInput.value = '';
+      
+      try {
+        // Send message through API (which will detect generation commands)
+        await canvasAPI.sendMessage(text, 'You');
+      } catch (error) {
+        // Fallback to local message if API fails
+        this.addChatMessage('You', text);
+        console.error('Failed to send message through API:', error);
+      }
       
       // Focus back to chat input
       chatInput.focus();
@@ -276,11 +286,53 @@ class ImageCanvasApp {
     });
   }
 
+  private setupRealTimeFeatures(): void {
+    // Initialize API with a demo canvas ID for now
+    canvasAPI.setCanvasId('demo-canvas-123');
+    
+    // Set up WebSocket callbacks
+    canvasAPI.connectWebSocket({
+      onChatMessage: (message: ChatMessage) => {
+        // Add received message to chat
+        this.chatMessages.push(message);
+        this.updateChatDisplay();
+      },
+      
+      onImageGenerated: async (data) => {
+        try {
+          // Add generated image to canvas
+          await this.canvas.addImageFromData(data.image);
+          this.updateGroupButtonStates();
+        } catch (error) {
+          console.error('Failed to add generated image to canvas:', error);
+        }
+      },
+      
+      onGenerationStarted: (data) => {
+        // Visual feedback for generation start is handled by chat messages
+        console.log('Image generation started:', data.prompt);
+      },
+      
+      onGenerationFailed: (data) => {
+        console.error('Image generation failed:', data.error);
+      },
+      
+      onUserJoined: (message: string) => {
+        this.addChatMessage('System', message);
+      },
+      
+      onUserLeft: (message: string) => {
+        this.addChatMessage('System', message);
+      }
+    });
+  }
+
   private addChatMessage(sender: string, text: string): void {
     const message: ChatMessage = {
       id: crypto.randomUUID(),
       text,
-      timestamp: Date.now()
+      sender,
+      timestamp: new Date().toISOString()
     };
 
     this.chatMessages.push(message);

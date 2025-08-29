@@ -1,5 +1,20 @@
 import type { ImageNode, ImageGroup, CanvasState, ChatMessage } from './types';
 
+// Image generation types
+export interface ImageGenerationRequest {
+  prompt: string;
+  size?: string; // "1024x1024", "1792x1024", "1024x1792"
+  quality?: string; // "standard" or "hd"
+  style?: string; // "vivid" or "natural"
+}
+
+export interface ImageGenerationResponse {
+  id: string;
+  prompt: string;
+  imageUrl: string;
+  revisedPrompt?: string;
+}
+
 const API_BASE_URL = 'http://localhost:8000/api';
 const WS_BASE_URL = 'ws://localhost:8000/ws';
 
@@ -187,6 +202,28 @@ export class CanvasAPI {
   }
 
   // WebSocket Real-time Collaboration
+  // Image Generation
+  async generateImage(request: ImageGenerationRequest): Promise<ImageGenerationResponse> {
+    if (!this.canvasId) {
+      throw new Error('No canvas loaded');
+    }
+
+    const response = await fetch(`${API_BASE_URL}/canvas/${this.canvasId}/generate-image`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return response.json();
+  }
+
+  // WebSocket Real-time Collaboration
   connectWebSocket(callbacks: {
     onCanvasUpdate?: (canvasState: CanvasState) => void;
     onChatMessage?: (message: ChatMessage) => void;
@@ -196,6 +233,9 @@ export class CanvasAPI {
     onImageDeleted?: (imageId: string) => void;
     onImagesGrouped?: (group: ImageGroup) => void;
     onImagesUngrouped?: (data: { groupId: string; imageIds: string[] }) => void;
+    onGenerationStarted?: (data: { prompt: string }) => void;
+    onImageGenerated?: (data: { image: ImageNode; generationId: string; prompt: string; revisedPrompt?: string }) => void;
+    onGenerationFailed?: (data: { error: string; prompt: string }) => void;
   }): void {
     if (!this.canvasId) {
       throw new Error('No canvas loaded');
@@ -247,6 +287,18 @@ export class CanvasAPI {
           
           case 'images_ungrouped':
             callbacks.onImagesUngrouped?.(message.data);
+            break;
+          
+          case 'generation_started':
+            callbacks.onGenerationStarted?.(message.data);
+            break;
+          
+          case 'image_generated':
+            callbacks.onImageGenerated?.(message.data);
+            break;
+          
+          case 'generation_failed':
+            callbacks.onGenerationFailed?.(message.data);
             break;
         }
       } catch (error) {

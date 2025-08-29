@@ -7,8 +7,17 @@ import json
 import asyncio
 from datetime import datetime
 import base64
+import os
+import re
+import aiohttp
+from openai import AsyncOpenAI
 
 app = FastAPI(title="Image Canvas Workspace API", version="1.0.0")
+
+# Initialize OpenAI client
+openai_client = AsyncOpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
+)
 
 # Enable CORS for frontend
 app.add_middleware(
@@ -63,10 +72,100 @@ class WebSocketMessage(BaseModel):
     data: Dict[str, Any]
     canvasId: str
 
+class ImageGenerationRequest(BaseModel):
+    prompt: str
+    size: str = "1024x1024"  # DALL-E 3 sizes: 1024x1024, 1792x1024, 1024x1792
+    quality: str = "standard"  # "standard" or "hd"
+    style: str = "vivid"  # "vivid" or "natural"
+
+class ImageGenerationResponse(BaseModel):
+    id: str
+    prompt: str
+    imageUrl: str
+    revisedPrompt: Optional[str] = None
+
 # In-memory storage (replace with database in production)
 canvas_states: Dict[str, CanvasState] = {}
 chat_messages: Dict[str, List[ChatMessage]] = {}
 active_connections: Dict[str, List[WebSocket]] = {}
+
+# Helper functions for image generation
+def detect_generation_command(text: str) -> Optional[str]:
+    """Detect if a chat message is requesting image generation"""
+    generation_patterns = [
+        r"^generate\s+(.+)$",
+        r"^create\s+(?:an?\s+)?image\s+of\s+(.+)$",
+        r"^draw\s+(.+)$",
+        r"^make\s+(?:an?\s+)?image\s+of\s+(.+)$",
+        r"^/imagine\s+(.+)$",
+        r"^imagine\s+(.+)$"
+    ]
+    
+    text_lower = text.lower().strip()
+    for pattern in generation_patterns:
+        match = re.match(pattern, text_lower)
+        if match:
+            return match.group(1).strip()
+    return None
+
+def enhance_prompt(prompt: str) -> str:
+    """Enhance the user prompt for better DALL-E 3 results"""
+    # Add quality descriptors if not present
+    quality_words = ["high quality", "detailed", "professional", "4k", "hd"]
+    if not any(word in prompt.lower() for word in quality_words):
+        prompt += ", high quality, detailed"
+    
+    return prompt
+
+async def download_and_convert_image(image_url: str) -> str:
+    """Download image from URL and convert to base64 data URL"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(image_url) as response:
+                if response.status == 200:
+                    image_data = await response.read()
+                    # Determine content type
+                    content_type = response.headers.get('content-type', 'image/png')
+                    # Convert to base64
+                    base64_data = base64.b64encode(image_data).decode('utf-8')
+                    return f"data:{content_type};base64,{base64_data}"
+                else:
+                    raise HTTPException(status_code=400, detail="Failed to download generated image")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing generated image: {str(e)}")
+
+async def generate_dalle_image(prompt: str, size: str = "1024x1024", quality: str = "standard", style: str = "vivid") -> ImageGenerationResponse:
+    """Generate image using OpenAI DALL-E 3"""
+    if not openai_client.api_key:
+        raise HTTPException(status_code=500, detail="OpenAI API key not configured")
+    
+    try:
+        enhanced_prompt = enhance_prompt(prompt)
+        
+        response = await openai_client.images.generate(
+            model="dall-e-3",
+            prompt=enhanced_prompt,
+            size=size,
+            quality=quality,
+            style=style,
+            n=1
+        )
+        
+        image_data = response.data[0]
+        image_url = image_data.url
+        
+        # Download and convert to base64 for storage
+        data_url = await download_and_convert_image(image_url)
+        
+        return ImageGenerationResponse(
+            id=str(uuid.uuid4()),
+            prompt=prompt,
+            imageUrl=data_url,
+            revisedPrompt=getattr(image_data, 'revised_prompt', None)
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image generation failed: {str(e)}")
 
 # Canvas State Endpoints
 @app.post("/api/canvas", response_model=CanvasState)
@@ -247,7 +346,7 @@ async def get_messages(canvas_id: str, limit: int = 50):
 
 @app.post("/api/canvas/{canvas_id}/messages", response_model=ChatMessage)
 async def send_message(canvas_id: str, text: str, sender: str = "User"):
-    """Send a chat message"""
+    """Send a chat message and check for image generation commands"""
     if canvas_id not in chat_messages:
         chat_messages[canvas_id] = []
     
@@ -268,7 +367,150 @@ async def send_message(canvas_id: str, text: str, sender: str = "User"):
         "canvasId": canvas_id
     })
     
+    # Check if message is an image generation command
+    generation_prompt = detect_generation_command(text)
+    if generation_prompt:
+        # Trigger image generation asynchronously
+        asyncio.create_task(handle_image_generation_command(canvas_id, generation_prompt, sender))
+    
     return message
+
+async def handle_image_generation_command(canvas_id: str, prompt: str, sender: str = "System"):
+    """Handle image generation from chat command"""
+    try:
+        # Notify that generation is starting
+        progress_message = ChatMessage(
+            id=str(uuid.uuid4()),
+            text=f"🎨 Generating image: '{prompt}'...",
+            sender="System",
+            timestamp=datetime.now(),
+            canvasId=canvas_id
+        )
+        
+        chat_messages[canvas_id].append(progress_message)
+        
+        await broadcast_to_canvas(canvas_id, {
+            "type": "chat_message", 
+            "data": progress_message.dict(),
+            "canvasId": canvas_id
+        })
+        
+        await broadcast_to_canvas(canvas_id, {
+            "type": "generation_started",
+            "data": {"prompt": prompt},
+            "canvasId": canvas_id
+        })
+        
+        # Generate the image
+        generated_image = await generate_dalle_image(prompt)
+        
+        # Add image to canvas
+        if canvas_id in canvas_states:
+            # Get canvas center for placement
+            canvas_state = canvas_states[canvas_id]
+            center_x = 0  # Center of the viewport
+            center_y = 0
+            
+            # Create new image node
+            image_node = ImageNode(
+                id=generated_image.id,
+                src=generated_image.imageUrl,
+                x=center_x - 160,  # Half of typical width (320px)
+                y=center_y - 120,  # Half of typical height
+                w=320,
+                h=240,  # Will be adjusted based on actual image dimensions
+                selected=False
+            )
+            
+            canvas_state.images.append(image_node)
+            canvas_state.lastModified = datetime.now()
+            
+            # Success message
+            success_text = f"✅ Image generated and added to canvas!"
+            if generated_image.revisedPrompt and generated_image.revisedPrompt != prompt:
+                success_text += f" (DALL-E refined: '{generated_image.revisedPrompt}')"
+            
+            success_message = ChatMessage(
+                id=str(uuid.uuid4()),
+                text=success_text,
+                sender="System",
+                timestamp=datetime.now(),
+                canvasId=canvas_id
+            )
+            
+            chat_messages[canvas_id].append(success_message)
+            
+            # Broadcast updates
+            await broadcast_to_canvas(canvas_id, {
+                "type": "chat_message",
+                "data": success_message.dict(),
+                "canvasId": canvas_id
+            })
+            
+            await broadcast_to_canvas(canvas_id, {
+                "type": "image_generated",
+                "data": {
+                    "image": image_node.dict(),
+                    "generationId": generated_image.id,
+                    "prompt": prompt,
+                    "revisedPrompt": generated_image.revisedPrompt
+                },
+                "canvasId": canvas_id
+            })
+            
+    except Exception as e:
+        # Error message
+        error_message = ChatMessage(
+            id=str(uuid.uuid4()),
+            text=f"❌ Failed to generate image: {str(e)}",
+            sender="System", 
+            timestamp=datetime.now(),
+            canvasId=canvas_id
+        )
+        
+        chat_messages[canvas_id].append(error_message)
+        
+        await broadcast_to_canvas(canvas_id, {
+            "type": "chat_message",
+            "data": error_message.dict(),
+            "canvasId": canvas_id
+        })
+        
+        await broadcast_to_canvas(canvas_id, {
+            "type": "generation_failed",
+            "data": {"error": str(e), "prompt": prompt},
+            "canvasId": canvas_id
+        })
+
+# Image Generation Endpoint
+@app.post("/api/canvas/{canvas_id}/generate-image", response_model=ImageGenerationResponse)
+async def generate_image_endpoint(canvas_id: str, request: ImageGenerationRequest):
+    """Generate an image using DALL-E 3 and optionally add to canvas"""
+    if canvas_id not in canvas_states:
+        raise HTTPException(status_code=404, detail="Canvas not found")
+    
+    try:
+        # Generate the image
+        generated_image = await generate_dalle_image(
+            request.prompt, 
+            request.size, 
+            request.quality, 
+            request.style
+        )
+        
+        # Broadcast generation completed
+        await broadcast_to_canvas(canvas_id, {
+            "type": "image_generation_complete",
+            "data": generated_image.dict(),
+            "canvasId": canvas_id
+        })
+        
+        return generated_image
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image generation failed: {str(e)}")
 
 # File Upload Endpoint
 @app.post("/api/upload")

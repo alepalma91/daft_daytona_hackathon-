@@ -438,6 +438,41 @@ export class ImageCanvas {
     });
   }
 
+  public addImageFromData(imageData: ImageNode): Promise<ImageNode> {
+    return new Promise((resolve, reject) => {
+      if (!imageData.src) {
+        reject(new Error('Image data must include src'));
+        return;
+      }
+
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      
+      img.onload = () => {
+        // Create complete image node
+        const completeImageNode: ImageNode = {
+          ...imageData,
+          img,
+          selected: false
+        };
+
+        // Find if image already exists (for real-time updates)
+        const existingIndex = this.images.findIndex(existing => existing.id === imageData.id);
+        if (existingIndex >= 0) {
+          this.images[existingIndex] = completeImageNode;
+        } else {
+          this.images.push(completeImageNode);
+        }
+
+        this.needsRedraw = true;
+        resolve(completeImageNode);
+      };
+
+      img.onerror = () => reject(new Error('Failed to load image from data'));
+      img.src = imageData.src;
+    });
+  }
+
   public clearImages(): void {
     this.images = [];
     this.needsRedraw = true;
