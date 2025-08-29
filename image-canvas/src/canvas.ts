@@ -1,16 +1,18 @@
-import { 
+import type { 
   ImageNode, 
   Viewport, 
   Point, 
   Rectangle, 
   DragState, 
-  SelectionState 
-} from './types.js';
+  SelectionState,
+  ImageGroup
+} from './types';
 
 export class ImageCanvas {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private images: ImageNode[] = [];
+  private groups: ImageGroup[] = [];
   private viewport: Viewport = { scale: 1, tx: 0, ty: 0 };
   private dragState: DragState = { isDragging: false, startPoint: { x: 0, y: 0 } };
   private selectionState: SelectionState = { 
@@ -21,36 +23,36 @@ export class ImageCanvas {
   private isPanning = false;
   private keys = new Set<string>();
   private needsRedraw = true;
+  private onSelectionChange?: () => void;
 
   constructor(canvas: HTMLCanvasElement) {
+    console.log('Creating ImageCanvas...');
     this.canvas = canvas;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Could not get 2D context');
     this.ctx = ctx;
 
-    this.setupCanvas();
-    this.setupEventListeners();
-    this.setupKeyboardListeners();
-    this.startRenderLoop();
+    try {
+      this.setupCanvas();
+      this.setupEventListeners();
+      this.setupKeyboardListeners();
+      this.startRenderLoop();
+      console.log('ImageCanvas created successfully');
+    } catch (error) {
+      console.error('Error setting up canvas:', error);
+      throw error;
+    }
   }
 
   private setupCanvas(): void {
-    // Set up HiDPI support
-    const dpr = window.devicePixelRatio || 1;
-    const rect = this.canvas.getBoundingClientRect();
-    
-    this.canvas.width = rect.width * dpr;
-    this.canvas.height = rect.height * dpr;
-    this.canvas.style.width = rect.width + 'px';
-    this.canvas.style.height = rect.height + 'px';
-    
-    this.ctx.scale(dpr, dpr);
-    
     // Prevent touch gestures
     this.canvas.style.touchAction = 'none';
     
     // Make canvas focusable for keyboard events
     this.canvas.tabIndex = 0;
+    
+    // Canvas sizing is handled by the main app, just ensure we have a fresh context
+    this.needsRedraw = true;
   }
 
   private setupEventListeners(): void {
@@ -106,8 +108,15 @@ export class ImageCanvas {
       if (!e.shiftKey && !hitImage.selected) {
         this.clearSelection();
         hitImage.selected = true;
+        // If this image is in a group, select all group members
+        this.selectGroup(hitImage);
       } else if (e.shiftKey) {
         hitImage.selected = !hitImage.selected;
+        // If toggling a grouped image, toggle the whole group
+        this.toggleGroup(hitImage);
+      } else if (!e.shiftKey) {
+        // Clicking on already selected image - just notify selection change
+        this.notifySelectionChange();
       }
 
       // Start dragging selected images
@@ -210,7 +219,6 @@ export class ImageCanvas {
   }
 
   private handleResize(): void {
-    this.setupCanvas();
     this.needsRedraw = true;
   }
 
@@ -223,6 +231,7 @@ export class ImageCanvas {
         img.selected = true;
       }
     });
+    this.notifySelectionChange();
   }
 
   private getMarqueeRect(): Rectangle {
@@ -270,13 +279,58 @@ export class ImageCanvas {
 
   private clearSelection(): void {
     this.images.forEach(img => img.selected = false);
+    this.notifySelectionChange();
+  }
+
+  private selectGroup(image: ImageNode): void {
+    if (image.groupId) {
+      this.images.forEach(img => {
+        if (img.groupId === image.groupId) {
+          img.selected = true;
+        }
+      });
+    }
+    this.notifySelectionChange();
+  }
+
+  private toggleGroup(image: ImageNode): void {
+    if (image.groupId) {
+      const groupImages = this.images.filter(img => img.groupId === image.groupId);
+      const allSelected = groupImages.every(img => img.selected);
+      groupImages.forEach(img => {
+        img.selected = !allSelected;
+      });
+    }
+    this.notifySelectionChange();
   }
 
   private deleteSelectedImages(): void {
     const before = this.images.length;
+    const deletedImages = this.images.filter(img => img.selected);
+    
+    // Remove images from groups before deleting
+    deletedImages.forEach(img => {
+      if (img.groupId) {
+        this.removeFromGroup(img.id);
+      }
+    });
+    
     this.images = this.images.filter(img => !img.selected);
     if (this.images.length < before) {
       this.needsRedraw = true;
+    }
+  }
+
+  private removeFromGroup(imageId: string): void {
+    this.groups = this.groups.map(group => ({
+      ...group,
+      imageIds: group.imageIds.filter(id => id !== imageId)
+    })).filter(group => group.imageIds.length > 1); // Remove groups with less than 2 images
+    
+    // Remove groupId from the image
+    const image = this.images.find(img => img.id === imageId);
+    if (image) {
+      image.groupId = undefined;
     }
   }
 
@@ -304,7 +358,18 @@ export class ImageCanvas {
     this.images.forEach(img => {
       this.ctx.drawImage(img.img, img.x, img.y, img.w, img.h);
       
-      // Draw selection highlight
+      // Draw group indicator (solid border for grouped images)
+      if (img.groupId) {
+        this.ctx.save();
+        this.ctx.strokeStyle = '#28a745'; // Green for grouped images
+        this.ctx.lineWidth = 3 / this.viewport.scale;
+        this.ctx.setLineDash([]);
+        this.ctx.strokeRect(img.x - 2 / this.viewport.scale, img.y - 2 / this.viewport.scale, 
+                           img.w + 4 / this.viewport.scale, img.h + 4 / this.viewport.scale);
+        this.ctx.restore();
+      }
+      
+      // Draw selection highlight (on top of group indicator)
       if (img.selected) {
         this.ctx.save();
         this.ctx.strokeStyle = '#4A90E2';
@@ -347,9 +412,10 @@ export class ImageCanvas {
         }
 
         // Place at center of current view
+        const rect = this.canvas.getBoundingClientRect();
         const centerWorld = this.screenToWorld({ 
-          x: this.canvas.width / (2 * (window.devicePixelRatio || 1)), 
-          y: this.canvas.height / (2 * (window.devicePixelRatio || 1))
+          x: rect.width / 2, 
+          y: rect.height / 2
         });
 
         const imageNode: ImageNode = {
@@ -379,5 +445,73 @@ export class ImageCanvas {
 
   public getSelectedCount(): number {
     return this.images.filter(img => img.selected).length;
+  }
+
+  public canGroup(): boolean {
+    const selectedImages = this.images.filter(img => img.selected);
+    return selectedImages.length >= 2;
+  }
+
+  public canUngroup(): boolean {
+    const selectedImages = this.images.filter(img => img.selected);
+    return selectedImages.some(img => img.groupId);
+  }
+
+  public groupSelectedImages(): string | null {
+    const selectedImages = this.images.filter(img => img.selected);
+    if (selectedImages.length < 2) return null;
+
+    const groupId = crypto.randomUUID();
+    const imageIds = selectedImages.map(img => img.id);
+
+    // Remove images from existing groups first
+    selectedImages.forEach(img => {
+      if (img.groupId) {
+        this.removeFromGroup(img.id);
+      }
+    });
+
+    // Create new group
+    const newGroup: ImageGroup = {
+      id: groupId,
+      imageIds,
+      name: `Group ${this.groups.length + 1}`
+    };
+
+    this.groups.push(newGroup);
+
+    // Assign group ID to images
+    selectedImages.forEach(img => {
+      img.groupId = groupId;
+    });
+
+    this.needsRedraw = true;
+    return groupId;
+  }
+
+  public ungroupSelectedImages(): string[] {
+    const selectedImages = this.images.filter(img => img.selected && img.groupId);
+    const ungroupedIds: string[] = [];
+
+    selectedImages.forEach(img => {
+      if (img.groupId) {
+        ungroupedIds.push(img.id);
+        this.removeFromGroup(img.id);
+      }
+    });
+
+    this.needsRedraw = true;
+    return ungroupedIds;
+  }
+
+  public setSelectionChangeCallback(callback: () => void): void {
+    this.onSelectionChange = callback;
+  }
+
+  private notifySelectionChange(): void {
+    if (this.onSelectionChange) {
+      // Use setTimeout to ensure the selection change is processed after the current event
+      setTimeout(() => this.onSelectionChange?.(), 0);
+    }
   }
 }

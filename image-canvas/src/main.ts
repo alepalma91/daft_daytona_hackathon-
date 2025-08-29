@@ -1,17 +1,45 @@
-import { ImageCanvas } from './canvas.js';
-import { ChatMessage } from './types.js';
+import { ImageCanvas } from './canvas';
+import type { ChatMessage } from './types';
 
 class ImageCanvasApp {
-  private canvas: ImageCanvas;
+  private canvas!: ImageCanvas;
   private chatMessages: ChatMessage[] = [];
 
   constructor() {
+    console.log('Creating ImageCanvasApp...');
     this.setupDOM();
-    this.canvas = new ImageCanvas(document.getElementById('canvas') as HTMLCanvasElement);
+    
+    // Wait for DOM to be ready before initializing canvas
+    setTimeout(() => {
+      this.initializeCanvas();
+    }, 100);
+  }
+
+  private initializeCanvas(): void {
+    const canvasElement = document.getElementById('canvas') as HTMLCanvasElement;
+    if (!canvasElement) {
+      console.error('Canvas element not found');
+      return;
+    }
+
+    console.log('Initializing canvas...');
+    this.canvas = new ImageCanvas(canvasElement);
+    
+    // Set up selection change callback to update group button states
+    this.canvas.setSelectionChangeCallback(() => {
+      this.updateGroupButtonStates();
+    });
+    
     this.setupEventListeners();
+    this.addChatMessage('System', 'Image Canvas Workspace ready! Add images using the toolbar above.');
+    console.log('Canvas initialized successfully');
+
+    // Add a test image to verify everything is working
+    this.addTestImage();
   }
 
   private setupDOM(): void {
+    console.log('Setting up DOM...');
     document.body.innerHTML = `
       <div id="app">
         <div id="toolbar">
@@ -22,6 +50,10 @@ class ImageCanvasApp {
           <div class="toolbar-group">
             <input type="file" id="file-input" multiple accept="image/*" />
             <label for="file-input" class="file-input-label">Add Files</label>
+          </div>
+          <div class="toolbar-group">
+            <button id="group-btn" disabled>Group Selected</button>
+            <button id="ungroup-btn" disabled>Ungroup</button>
           </div>
           <div class="toolbar-group">
             <button id="clear-btn">Clear All</button>
@@ -38,26 +70,47 @@ class ImageCanvasApp {
             <input type="text" id="chat-input" placeholder="Type a message..." />
             <button id="send-btn">Send</button>
           </div>
-        </div>
-      </div>
+    </div>
+  </div>
     `;
 
-    // Resize canvas to fill container
-    this.resizeCanvas();
-    window.addEventListener('resize', this.resizeCanvas.bind(this));
+    // Set up canvas sizing
+    setTimeout(() => {
+      this.resizeCanvas();
+      window.addEventListener('resize', this.resizeCanvas.bind(this));
+    }, 50);
   }
 
   private resizeCanvas(): void {
     const canvas = document.getElementById('canvas') as HTMLCanvasElement;
     const container = document.getElementById('canvas-container') as HTMLElement;
     
-    canvas.width = container.clientWidth;
-    canvas.height = container.clientHeight;
-    canvas.style.width = container.clientWidth + 'px';
-    canvas.style.height = container.clientHeight + 'px';
+    if (!canvas || !container) return;
+    
+    const rect = container.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    
+    // Set display size (CSS pixels)
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+    
+    // Set actual size in memory (scaled up for HiDPI)
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    
+    // Scale the drawing context to match the device pixel ratio
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.scale(dpr, dpr);
+    }
   }
 
   private setupEventListeners(): void {
+    if (!this.canvas) {
+      console.error('Canvas not initialized');
+      return;
+    }
+
     // URL input handling
     const urlInput = document.getElementById('url-input') as HTMLInputElement;
     const addUrlBtn = document.getElementById('add-url-btn') as HTMLButtonElement;
@@ -74,6 +127,7 @@ class ImageCanvasApp {
         urlInput.value = '';
         
         this.addChatMessage('System', `Image added from URL: ${url}`);
+        this.updateGroupButtonStates();
       } catch (error) {
         this.addChatMessage('System', `Failed to load image: ${error instanceof Error ? error.message : 'Unknown error'}`);
       } finally {
@@ -101,6 +155,7 @@ class ImageCanvasApp {
           const url = URL.createObjectURL(file);
           await this.canvas.addImage(url);
           this.addChatMessage('System', `Image added: ${file.name}`);
+          this.updateGroupButtonStates();
         } catch (error) {
           this.addChatMessage('System', `Failed to load ${file.name}: ${error instanceof Error ? error.message : 'Unknown error'}`);
         }
@@ -110,11 +165,33 @@ class ImageCanvasApp {
       target.value = '';
     });
 
+    // Group buttons
+    const groupBtn = document.getElementById('group-btn') as HTMLButtonElement;
+    const ungroupBtn = document.getElementById('ungroup-btn') as HTMLButtonElement;
+
+    groupBtn.addEventListener('click', () => {
+      const groupId = this.canvas.groupSelectedImages();
+      if (groupId) {
+        const selectedCount = this.canvas.getSelectedCount();
+        this.addChatMessage('System', `Grouped ${selectedCount} images together`);
+        this.updateGroupButtonStates();
+      }
+    });
+
+    ungroupBtn.addEventListener('click', () => {
+      const ungroupedIds = this.canvas.ungroupSelectedImages();
+      if (ungroupedIds.length > 0) {
+        this.addChatMessage('System', `Ungrouped ${ungroupedIds.length} images`);
+        this.updateGroupButtonStates();
+      }
+    });
+
     // Clear button
     const clearBtn = document.getElementById('clear-btn') as HTMLButtonElement;
     clearBtn.addEventListener('click', () => {
       this.canvas.clearImages();
       this.addChatMessage('System', 'All images cleared');
+      this.updateGroupButtonStates();
     });
 
     // Chat functionality
@@ -247,9 +324,71 @@ class ImageCanvasApp {
       return false;
     }
   }
+
+  private async addTestImage(): Promise<void> {
+    // Add a simple test image to verify the canvas is working
+    try {
+      await this.canvas.addImage('https://picsum.photos/300/200?random=1');
+      this.addChatMessage('System', 'Added test image from Picsum Photos');
+      this.updateGroupButtonStates();
+    } catch (error) {
+      console.log('Test image failed to load, creating canvas test pattern instead');
+      // If external image fails, we'll just rely on the grid background
+    }
+  }
+
+  private updateGroupButtonStates(): void {
+    const groupBtn = document.getElementById('group-btn') as HTMLButtonElement;
+    const ungroupBtn = document.getElementById('ungroup-btn') as HTMLButtonElement;
+
+    if (groupBtn && ungroupBtn) {
+      groupBtn.disabled = !this.canvas.canGroup();
+      ungroupBtn.disabled = !this.canvas.canUngroup();
+      
+      // Update button text to show how many images are selected
+      const selectedCount = this.canvas.getSelectedCount();
+      if (selectedCount === 0) {
+        groupBtn.textContent = 'Group Selected';
+        ungroupBtn.textContent = 'Ungroup';
+      } else {
+        groupBtn.textContent = `Group ${selectedCount} Selected`;
+        ungroupBtn.textContent = this.canvas.canUngroup() ? 'Ungroup Selected' : 'Ungroup';
+      }
+    }
+  }
 }
 
 // Initialize the application
 document.addEventListener('DOMContentLoaded', () => {
-  new ImageCanvasApp();
+  console.log('DOM loaded, initializing app...');
+  
+  // Remove loading screen
+  const loading = document.getElementById('loading');
+  if (loading) {
+    loading.style.display = 'none';
+  }
+  
+  // Initialize the app
+  try {
+    new ImageCanvasApp();
+    console.log('App initialized successfully');
+  } catch (error) {
+    console.error('Failed to initialize app:', error);
+    document.body.innerHTML = `
+      <div style="
+        padding: 2rem;
+        background: #1a1a1a;
+        color: white;
+        font-family: Arial, sans-serif;
+        min-height: 100vh;
+      ">
+        <h1>Error Loading Application</h1>
+        <p>There was an error initializing the Image Canvas Workspace:</p>
+        <pre style="background: #333; padding: 1rem; border-radius: 4px; overflow: auto;">
+${error instanceof Error ? error.stack : error}
+        </pre>
+        <p>Please check the browser console for more details.</p>
+      </div>
+    `;
+  }
 });

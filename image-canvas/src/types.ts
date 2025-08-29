@@ -20,6 +20,7 @@ export interface ImageNode {
   w: number;
   h: number;
   selected: boolean;
+  groupId?: string;
 }
 
 export interface Viewport {
@@ -48,10 +49,18 @@ export interface ChatMessage {
   timestamp: number;
 }
 
+export interface ImageGroup {
+  id: string;
+  imageIds: string[];
+  name?: string;
+}
+
 // Event types
 export interface CanvasEvents {
   imageAdded: ImageNode;
   imageDeleted: string;
   selectionChanged: string[];
   messageSent: ChatMessage;
+  imageGrouped: ImageGroup;
+  imageUngrouped: string[];
 }
