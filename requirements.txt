@@ -1,0 +1,22 @@
+# Core dependencies
+python-dotenv==1.0.1
+daytona==0.1.0  # Adjust version as needed
+daft[all]==0.3.0  # Latest Daft with all features
+
+# API and web framework
+fastapi==0.110.0
+uvicorn==0.29.0
+
+# Image processing
+Pillow==10.3.0
+numpy==1.26.4
+
+# ML/AI utilities (for future use)
+torch>=2.0.0
+transformers>=4.38.0
+diffusers>=0.27.0
+
+# Development tools
+pytest==8.1.1
+black==24.3.0
+ruff==0.3.4
