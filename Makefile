@@ -14,8 +14,9 @@ NC=\033[0m # No Color
 BACKEND_PORT=8001
 FRONTEND_PORT=5173
 
-# Python virtual environment paths
-VENV_PATH=./venv
+# Get the directory where this Makefile is located and use absolute paths
+MAKEFILE_DIR := $(shell pwd)
+VENV_PATH=$(MAKEFILE_DIR)/venv
 PYTHON=$(VENV_PATH)/bin/python
 PIP=$(VENV_PATH)/bin/pip
 
